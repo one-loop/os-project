@@ -26,7 +26,7 @@ void run_command(char *command) {
     char *errfile = NULL;
 
     // check for error redirection
-    char *err_redir = strchr(command, "2>");
+    char *err_redir = strstr(command, "2>");
     if (err_redir != NULL) {
         *err_redir = '\0'; // split command from file
         err_redir += 2; // move past "2>"
