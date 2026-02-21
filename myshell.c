@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h> // fork, execvp
 #include <sys/wait.h> // wait
+#include <fcntl.h> // for open() 
 
 void print_help() {
     printf("Available commands: \n");
@@ -20,7 +21,26 @@ void run_command(char *command) {
     char *args[10]; // create an array to store the arguments
     int i = 0;
 
-    // printf("Running command %s\n", command);
+    char *outfile = NULL;
+    char *infile = NULL;
+    // check for ouput redirection (>) in the input string
+    char *out_redir = strchr(command, '>');
+    if (out_redir != NULL) {
+        *out_redir = '\0'; // split command from file
+        out_redir++; // move past >
+        // remove leading spaces
+        while (*out_redir == ' ') out_redir++;
+        outfile = out_redir; // file name to send output to
+    }
+
+    char *in_redir = strchr(command, '<');
+    if (in_redir != NULL) {
+        *in_redir = '\0'; // split command from file
+        in_redir++; // move past < character
+        // remove leading spaces
+        while (*in_redir == ' ') in_redir++;
+        infile = in_redir; // set file name to take input from
+    }
 
     // tokenize the input command (split by spaces to separate arguments)
     char *token = strtok(command, " ");
@@ -36,11 +56,31 @@ void run_command(char *command) {
     if (pid == 0) {
         // running in child process
         // printf("Running command in child process.\n");
+        // if output redirection exists, open file and dup2
+        if (outfile != NULL) {
+            int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 1); // replace stdout with the file
+            close(fd); // fd no longer needed
+        }
+
+        if (infile != NULL) {
+            int fd = open(infile, O_RDONLY);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 0); // replace stdin with the file 
+            close(fd);
+        }
+
         // e.g. child will call execvp("ls", {"ls", "-l", NULL});
         execvp(args[0], args); // child becomes /bin/ls
 
-        // only runs if exec fails
-        perror("command failed");
+        perror("command failed"); // only runs if exec fails
         exit(1);
     } else {
         // running in parent process
