@@ -23,7 +23,18 @@ void run_command(char *command) {
 
     char *outfile = NULL;
     char *infile = NULL;
-    // check for ouput redirection (>) in the input string
+    char *errfile = NULL;
+
+    // check for error redirection
+    char *err_redir = strstr(command, "2>");
+    if (err_redir != NULL) {
+        *err_redir = '\0'; // split command from file
+        err_redir += 2; // move past "2>"
+        while (*err_redir == ' ') err_redir++; // trim spaces
+        errfile = err_redir;
+    }
+
+    // check for output redirection (>) in the input string
     char *out_redir = strchr(command, '>');
     if (out_redir != NULL) {
         *out_redir = '\0'; // split command from file
@@ -33,6 +44,7 @@ void run_command(char *command) {
         outfile = out_redir; // file name to send output to
     }
 
+    // input redirection <
     char *in_redir = strchr(command, '<');
     if (in_redir != NULL) {
         *in_redir = '\0'; // split command from file
@@ -41,6 +53,7 @@ void run_command(char *command) {
         while (*in_redir == ' ') in_redir++;
         infile = in_redir; // set file name to take input from
     }
+    
 
     // tokenize the input command (split by spaces to separate arguments)
     char *token = strtok(command, " ");
@@ -67,6 +80,7 @@ void run_command(char *command) {
             close(fd); // fd no longer needed
         }
 
+        // input redirection
         if (infile != NULL) {
             int fd = open(infile, O_RDONLY);
             if (fd < 0) {
@@ -74,6 +88,17 @@ void run_command(char *command) {
                 exit(1);
             }
             dup2(fd, 0); // replace stdin with the file 
+            close(fd);
+        }
+
+        // error redirection
+        if (errfile != NULL) {
+            int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 2); // redirect stderr
             close(fd);
         }
 
