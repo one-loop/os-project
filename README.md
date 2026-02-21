@@ -1,4 +1,4 @@
-# Operating Systems Project — myshell (Phase 1)
+# Operating Systems Project
 
 A custom remote shell/CLI written in **C** for the NYU Abu Dhabi Operating Systems course (Spring 2026). The goal is to build a minimal shell that simulates core OS services (processes, I/O redirection, pipes) and to practice Linux system calls: `fork()`, `exec()`, `wait()`, `dup2()`, and `pipe()`.
 
