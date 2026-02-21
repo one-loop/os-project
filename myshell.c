@@ -34,7 +34,7 @@ void run_command(char *command) {
         errfile = err_redir;
     }
 
-    // check for ouput redirection (>) in the input string
+    // check for output redirection (>) in the input string
     char *out_redir = strchr(command, '>');
     if (out_redir != NULL) {
         *out_redir = '\0'; // split command from file
