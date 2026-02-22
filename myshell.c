@@ -19,7 +19,13 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
     if (err_redir != NULL) {
         *err_redir = '\0'; // split command from file
         err_redir += 2; // move past "2>"
-        while (*err_redir == ' ') err_redir++; // trim spaces
+        while (*err_redir == ' ') err_redir++; // trim leading spaces
+        // trim trailing spaces/newlines
+        char *end = err_redir + strlen(err_redir) - 1;
+        while (end > err_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
+            *end = '\0';
+            end--;
+        }
         *errfile = err_redir;
     }
 
@@ -30,6 +36,12 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
         out_redir++; // move past >
         // remove leading spaces
         while (*out_redir == ' ') out_redir++;
+        // trim trailing spaces/newlines
+        char *end = out_redir + strlen(out_redir) - 1;
+        while (end > out_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
+            *end = '\0';
+            end--;
+        }
         *outfile = out_redir; // file name to send output to
     }
 
@@ -40,6 +52,12 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
         in_redir++; // move past < character
         // remove leading spaces
         while (*in_redir == ' ') in_redir++;
+        // trim trailing spaces/newlines
+        char *end = in_redir + strlen(in_redir) - 1;
+        while (end > in_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
+            *end = '\0';
+            end--;
+        }
         *infile = in_redir; // set file name to take input from
     }
 }
@@ -114,7 +132,143 @@ void run_command(char *command) {
     }
 }
 
-// New function to handle piped commands (i.e., cmd1 | cmd2)
+// Helper function to execute a single command with redirections
+void execute_command_with_redirections(char *cmd, char *infile, char *outfile, char *errfile) {
+    char *args[10];
+    
+    // Handle input redirection if present
+    if (infile != NULL) {
+        int fd = open(infile, O_RDONLY);
+        if (fd < 0) {
+            perror("open");
+            exit(1);
+        }
+        dup2(fd, 0);
+        close(fd);
+    }
+    
+    // Handle output redirection if present
+    if (outfile != NULL) {
+        int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("open");
+            exit(1);
+        }
+        dup2(fd, 1);
+        close(fd);
+    }
+    
+    // Handle error redirection if present
+    if (errfile != NULL) {
+        int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            perror("open");
+            exit(1);
+        }
+        dup2(fd, 2);
+        close(fd);
+    }
+    
+    // Parse cmd into args
+    int i = 0;
+    char *token = strtok(cmd, " ");
+    while (token != NULL && i < 10 - 1) {
+        args[i++] = token;
+        token = strtok(NULL, " ");
+    }
+    args[i] = NULL;
+    
+    // Execute command
+    execvp(args[0], args);
+    perror("command failed");
+    exit(1);
+}
+
+// New function to handle multiple piped commands (e.g., cmd1 | cmd2 | cmd3 | ...)
+void run_multi_piped_command(char *command) {
+    // First, count how many commands we have (this will be equal to count pipes + 1)
+    int num_commands = 1;
+    char *temp = command;
+    while ((temp = strchr(temp, '|')) != NULL) {
+        num_commands++;
+        temp++;
+    }
+    
+    // Split commands by pipe symbol
+    char *commands[num_commands];
+    int cmd_idx = 0;
+    char *token = strtok(command, "|");
+    while (token != NULL && cmd_idx < num_commands) {
+        // Trim leading/trailing spaces
+        while (*token == ' ') token++;
+        commands[cmd_idx++] = token;
+        token = strtok(NULL, "|");
+    }
+    
+    // We need (num_commands - 1) pipes to connect num_commands commands
+    int num_pipes = num_commands - 1;
+    int pipes[num_pipes][2]; // pipes[i][0] = read end, pipes[i][1] = write end
+    
+    // Create all pipes
+    for (int i = 0; i < num_pipes; i++) {
+        if (pipe(pipes[i]) == -1) {
+            perror("pipe");
+            return;
+        }
+    }
+    
+    // Array to store all child PIDs
+    pid_t pids[num_commands];
+    
+    // Fork and execute each command
+    for (int i = 0; i < num_commands; i++) {
+        pids[i] = fork();
+        
+        if (pids[i] == 0) {
+            // CHILD PROCESS
+            
+            // If not the first command, redirect stdin from previous pipe
+            if (i > 0) {
+                dup2(pipes[i-1][0], 0); // stdin comes from previous pipe's read end
+            }
+            
+            // If not the last command, redirect stdout to next pipe
+            if (i < num_commands - 1) {
+                dup2(pipes[i][1], 1); // stdout goes to current pipe's write end
+            }
+            
+            // Close all pipe file descriptors in child
+            for (int j = 0; j < num_pipes; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+            
+            // Parse redirections for this command
+            char *outfile = NULL, *infile = NULL, *errfile = NULL;
+            parse_redirections(commands[i], &outfile, &infile, &errfile);
+            
+            // Execute the command with its redirections
+            execute_command_with_redirections(commands[i], infile, outfile, errfile);
+            
+            // Should never reach here if exec succeeds (inshallah), but if it does, exit with error
+            exit(1);
+        }
+    }
+    
+    // PARENT PROCESS
+    // Close all pipe file descriptors in parent
+    for (int i = 0; i < num_pipes; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+    
+    // Wait for all children to finish
+    for (int i = 0; i < num_commands; i++) {
+        waitpid(pids[i], NULL, 0);
+    }
+}
+
+// Old function to handle piped commands (e.g., cmd1 | cmd2) - KEEPING FOR REFERENCE BUT NOT USED
 void run_piped_command(char *command) {
     // Find the pipe symbol
     char *pipe_pos = strchr(command, '|');
@@ -279,8 +433,8 @@ int main() {
             exit(0); // exit(0); exits the entire program immediately
             // return 0; (exits only from main)
         } else if (strchr(command, '|') != NULL) {
-            // Command contains pipe, use piped execution
-            run_piped_command(command);
+            // Command contains pipe(s), use multi-pipe execution
+            run_multi_piped_command(command);
         } else {
             // Regular command without pipes
             run_command(command);
