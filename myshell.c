@@ -101,12 +101,11 @@ void run_command(char *command) {
 
     if (pid == 0) {
         // running in child process
-        // printf("Running command in child process.\n");
         // if output redirection exists, open file and dup2
         if (outfile != NULL) {
             int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0) {
-                perror("open");
+                fprintf(stderr, "Error: Cannot open or create output file '%s'.\n", outfile);
                 exit(1);
             }
             dup2(fd, 1); // replace stdout with the file
@@ -128,7 +127,7 @@ void run_command(char *command) {
         if (errfile != NULL) {
             int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0) {
-                perror("open");
+                fprintf(stderr, "Error: Cannot open or create error file '%s'.\n", errfile);
                 exit(1);
             }
             dup2(fd, 2); // redirect stderr
@@ -143,7 +142,6 @@ void run_command(char *command) {
     } else {
         // running in parent process
         wait(NULL); // parent waits for child to finish
-        // printf("Child finished.\n");
     }
 }
 
@@ -166,7 +164,7 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     if (outfile != NULL) {
         int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
-            perror("open");
+            fprintf(stderr, "Error: Cannot open or create output file '%s'.\n", outfile);
             exit(1);
         }
         dup2(fd, 1);
@@ -177,7 +175,7 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     if (errfile != NULL) {
         int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
-            perror("open");
+            fprintf(stderr, "Error: Cannot open or create error file '%s'.\n", errfile);
             exit(1);
         }
         dup2(fd, 2);
@@ -199,7 +197,7 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     exit(1);
 }
 
-// New function to handle multiple piped commands (e.g., cmd1 | cmd2 | cmd3 | ...)
+// New function to handle multiple piped commands (cmd1 | cmd2 | cmd3 | ...)
 void run_multi_piped_command(char *command) {
     // First, count how many commands we have (this will be equal to count pipes + 1)
     int num_commands = 1;
@@ -231,20 +229,20 @@ void run_multi_piped_command(char *command) {
         token = strtok(NULL, "|");
     }
     
-    // Check if last command is missing (e.g., "cmd1 |")
+    // Check if last command is missing (like "cmd1 |")
     if (cmd_idx < num_commands) {
         fprintf(stderr, "Command missing after pipe.\n");
         return;
     }
     
-    // We need (num_commands - 1) pipes to connect num_commands commands
+    // (num_commands - 1) pipes to connect num_commands commands
     int num_pipes = num_commands - 1;
     int pipes[num_pipes][2]; // pipes[i][0] = read end, pipes[i][1] = write end
     
     // Create all pipes
     for (int i = 0; i < num_pipes; i++) {
         if (pipe(pipes[i]) == -1) {
-            perror("pipe");
+            perror("Error: pipe() failed while creating pipeline segment");
             return;
         }
     }
@@ -257,7 +255,7 @@ void run_multi_piped_command(char *command) {
         pids[i] = fork();
         
         if (pids[i] == 0) {
-            // CHILD PROCESS
+            // PART OF CHILD PROCESS
             
             // If not the first command, redirect stdin from previous pipe
             if (i > 0) {
@@ -289,7 +287,7 @@ void run_multi_piped_command(char *command) {
         }
     }
     
-    // PARENT PROCESS
+    // PART OF PARENT PROCESS
     // Close all pipe file descriptors in parent
     for (int i = 0; i < num_pipes; i++) {
         close(pipes[i][0]);
@@ -301,155 +299,6 @@ void run_multi_piped_command(char *command) {
         waitpid(pids[i], NULL, 0);
     }
 }
-
-// Old function to handle piped commands (e.g., cmd1 | cmd2) - KEEPING FOR REFERENCE BUT NOT USED
-void run_piped_command(char *command) {
-    // Find the pipe symbol
-    char *pipe_pos = strchr(command, '|');
-    if (pipe_pos == NULL) {
-        // No pipe found, shouldn't happen but we need to handle
-        run_command(command);
-        return;
-    }
-
-    // Split command into two parts: before and after pipe
-    *pipe_pos = '\0'; // Replace | with null terminator
-    char *cmd1 = command; // First command (before pipe)
-    char *cmd2 = pipe_pos + 1; // Second command (after pipe)
-
-    // Trim leading/trailing spaces from both commands
-    while (*cmd1 == ' ') cmd1++;
-    while (*cmd2 == ' ') cmd2++;
-
-    // Create the pipe (pipefd[0] is read end, pipefd[1] is write end)
-    int pipefd[2];
-    if (pipe(pipefd) == -1) {
-        perror("pipe");
-        return;
-    }
-
-    // Fork first child for cmd1
-    pid_t pid1 = fork();
-    if (pid1 == 0) {
-        // CHILD 1: Execute cmd1 and send output to pipe
-        
-        // Redirect stdout to pipe write end
-        dup2(pipefd[1], 1); // stdout now goes to pipe
-        
-        // Close both pipe file descriptors (already duplicated)
-        close(pipefd[0]);
-        close(pipefd[1]);
-
-        // Parse and execute cmd1 (it might have redirections)
-        char *args[10];
-        char *outfile = NULL, *infile = NULL, *errfile = NULL;
-        
-        // Parse redirections for cmd1
-        parse_redirections(cmd1, &outfile, &infile, &errfile);
-        
-        // Handle input redirection if present
-        if (infile != NULL) {
-            int fd = open(infile, O_RDONLY);
-            if (fd < 0) {
-                perror("open");
-                exit(1);
-            }
-            dup2(fd, 0);
-            close(fd);
-        }
-        
-        // Handle error redirection if present
-        if (errfile != NULL) {
-            int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd < 0) {
-                perror("open");
-                exit(1);
-            }
-            dup2(fd, 2);
-            close(fd);
-        }
-        
-        // Parse cmd1 into args
-        int i = 0;
-        char *token = strtok(cmd1, " ");
-        while (token != NULL && i < 10 - 1) {
-            args[i++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[i] = NULL;
-        
-        // Finally, execute cmd1
-        execvp(args[0], args);
-        perror("command failed");
-        exit(1);
-    }
-
-    // Fork second child for cmd2
-    pid_t pid2 = fork();
-    if (pid2 == 0) {
-        // CHILD 2: Execute cmd2 and receive input from pipe
-        
-        // Redirect stdin to pipe read end
-        dup2(pipefd[0], 0); // stdin now comes from pipe
-        
-        // Close both pipe file descriptors (already duplicated)
-        close(pipefd[0]);
-        close(pipefd[1]);
-
-        // Now parse and execute cmd2 (it might have redirections)
-        char *args[10];
-        char *outfile = NULL, *infile = NULL, *errfile = NULL;
-        
-        // Parse redirections for cmd2
-        parse_redirections(cmd2, &outfile, &infile, &errfile);
-        
-        // Handle output redirection if present
-        if (outfile != NULL) {
-            int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd < 0) {
-                perror("open");
-                exit(1);
-            }
-            dup2(fd, 1);
-            close(fd);
-        }
-        
-        // Handle error redirection if present
-        if (errfile != NULL) {
-            int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (fd < 0) {
-                perror("open");
-                exit(1);
-            }
-            dup2(fd, 2);
-            close(fd);
-        }
-        
-        // Parse cmd2 into args
-        int i = 0;
-        char *token = strtok(cmd2, " ");
-        while (token != NULL && i < 10 - 1) {
-            args[i++] = token;
-            token = strtok(NULL, " ");
-        }
-        args[i] = NULL;
-        
-        // Finally, execute cmd2
-        execvp(args[0], args);
-        perror("command failed");
-        exit(1);
-    }
-
-    // PARENT PROCESS
-    // Close both pipe ends in parent (children have their own copies)
-    close(pipefd[0]);
-    close(pipefd[1]);
-    
-    // Wait for both children to finish
-    waitpid(pid1, NULL, 0);
-    waitpid(pid2, NULL, 0);
-}
-
 
 int main() {
     char command[256]; // string to store user's command
@@ -463,11 +312,9 @@ int main() {
         command[strcspn(command, "\n")] = '\0';
 
         if (strcmp(command, "exit") == 0) {
-            // printf("Exiting...\n");
-            exit(0); // exit(0); exits the entire program immediately
-            // return 0; (exits only from main)
+            exit(0); // exits the entire program immediately
         } else if (strchr(command, '|') != NULL) {
-            // Command contains pipe(s), use multi-pipe execution
+            // Command contains pipes, use multi-pipe execution
             run_multi_piped_command(command);
         } else {
             // Regular command without pipes
