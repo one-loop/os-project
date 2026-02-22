@@ -126,8 +126,6 @@ int main() {
             // printf("Exiting...\n");
             exit(0); // exit(0); exits the entire program immediately
             // return 0; (exits only from main)
-        } else if (strcmp(command, "help") == 0) {
-            print_help();
         } else {
             run_command(command);
             // shell continues
