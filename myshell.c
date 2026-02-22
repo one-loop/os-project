@@ -13,21 +13,14 @@ void print_help() {
     printf("    exit            - exit the program\n");
 }
 
-void run_command(char *command) {
-    char *args[10]; // create an array to store the arguments
-    int i = 0;
-
-    char *outfile = NULL;
-    char *infile = NULL;
-    char *errfile = NULL;
-
+void parse_redirections(char *command, char **outfile, char **infile, char **errfile) { // helper function to parse redirections from the command string
     // check for error redirection
     char *err_redir = strstr(command, "2>");
     if (err_redir != NULL) {
         *err_redir = '\0'; // split command from file
         err_redir += 2; // move past "2>"
         while (*err_redir == ' ') err_redir++; // trim spaces
-        errfile = err_redir;
+        *errfile = err_redir;
     }
 
     // check for output redirection (>) in the input string
@@ -37,7 +30,7 @@ void run_command(char *command) {
         out_redir++; // move past >
         // remove leading spaces
         while (*out_redir == ' ') out_redir++;
-        outfile = out_redir; // file name to send output to
+        *outfile = out_redir; // file name to send output to
     }
 
     // input redirection <
@@ -47,9 +40,20 @@ void run_command(char *command) {
         in_redir++; // move past < character
         // remove leading spaces
         while (*in_redir == ' ') in_redir++;
-        infile = in_redir; // set file name to take input from
+        *infile = in_redir; // set file name to take input from
     }
-    
+}
+
+void run_command(char *command) {
+    char *args[10]; // create an array to store the arguments
+    int i = 0;
+
+    char *outfile = NULL;
+    char *infile = NULL;
+    char *errfile = NULL;
+
+    // Parse all redirections
+    parse_redirections(command, &outfile, &infile, &errfile); // use the helper function to parse redirections and update the command string accordingly
 
     // tokenize the input command (split by spaces to separate arguments)
     char *token = strtok(command, " ");
@@ -110,6 +114,154 @@ void run_command(char *command) {
     }
 }
 
+// New function to handle piped commands (i.e., cmd1 | cmd2)
+void run_piped_command(char *command) {
+    // Find the pipe symbol
+    char *pipe_pos = strchr(command, '|');
+    if (pipe_pos == NULL) {
+        // No pipe found, shouldn't happen but we need to handle
+        run_command(command);
+        return;
+    }
+
+    // Split command into two parts: before and after pipe
+    *pipe_pos = '\0'; // Replace | with null terminator
+    char *cmd1 = command; // First command (before pipe)
+    char *cmd2 = pipe_pos + 1; // Second command (after pipe)
+
+    // Trim leading/trailing spaces from both commands
+    while (*cmd1 == ' ') cmd1++;
+    while (*cmd2 == ' ') cmd2++;
+
+    // Create the pipe (pipefd[0] is read end, pipefd[1] is write end)
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        return;
+    }
+
+    // Fork first child for cmd1
+    pid_t pid1 = fork();
+    if (pid1 == 0) {
+        // CHILD 1: Execute cmd1 and send output to pipe
+        
+        // Redirect stdout to pipe write end
+        dup2(pipefd[1], 1); // stdout now goes to pipe
+        
+        // Close both pipe file descriptors (already duplicated)
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        // Parse and execute cmd1 (it might have redirections)
+        char *args[10];
+        char *outfile = NULL, *infile = NULL, *errfile = NULL;
+        
+        // Parse redirections for cmd1
+        parse_redirections(cmd1, &outfile, &infile, &errfile);
+        
+        // Handle input redirection if present
+        if (infile != NULL) {
+            int fd = open(infile, O_RDONLY);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 0);
+            close(fd);
+        }
+        
+        // Handle error redirection if present
+        if (errfile != NULL) {
+            int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 2);
+            close(fd);
+        }
+        
+        // Parse cmd1 into args
+        int i = 0;
+        char *token = strtok(cmd1, " ");
+        while (token != NULL && i < 10 - 1) {
+            args[i++] = token;
+            token = strtok(NULL, " ");
+        }
+        args[i] = NULL;
+        
+        // Finally, execute cmd1
+        execvp(args[0], args);
+        perror("command failed");
+        exit(1);
+    }
+
+    // Fork second child for cmd2
+    pid_t pid2 = fork();
+    if (pid2 == 0) {
+        // CHILD 2: Execute cmd2 and receive input from pipe
+        
+        // Redirect stdin to pipe read end
+        dup2(pipefd[0], 0); // stdin now comes from pipe
+        
+        // Close both pipe file descriptors (already duplicated)
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        // Now parse and execute cmd2 (it might have redirections)
+        char *args[10];
+        char *outfile = NULL, *infile = NULL, *errfile = NULL;
+        
+        // Parse redirections for cmd2
+        parse_redirections(cmd2, &outfile, &infile, &errfile);
+        
+        // Handle output redirection if present
+        if (outfile != NULL) {
+            int fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 1);
+            close(fd);
+        }
+        
+        // Handle error redirection if present
+        if (errfile != NULL) {
+            int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("open");
+                exit(1);
+            }
+            dup2(fd, 2);
+            close(fd);
+        }
+        
+        // Parse cmd2 into args
+        int i = 0;
+        char *token = strtok(cmd2, " ");
+        while (token != NULL && i < 10 - 1) {
+            args[i++] = token;
+            token = strtok(NULL, " ");
+        }
+        args[i] = NULL;
+        
+        // Finally, execute cmd2
+        execvp(args[0], args);
+        perror("command failed");
+        exit(1);
+    }
+
+    // PARENT PROCESS
+    // Close both pipe ends in parent (children have their own copies)
+    close(pipefd[0]);
+    close(pipefd[1]);
+    
+    // Wait for both children to finish
+    waitpid(pid1, NULL, 0);
+    waitpid(pid2, NULL, 0);
+}
+
 
 int main() {
     char command[256]; // string to store user's command
@@ -126,7 +278,11 @@ int main() {
             // printf("Exiting...\n");
             exit(0); // exit(0); exits the entire program immediately
             // return 0; (exits only from main)
+        } else if (strchr(command, '|') != NULL) {
+            // Command contains pipe, use piped execution
+            run_piped_command(command);
         } else {
+            // Regular command without pipes
             run_command(command);
             // shell continues
         }
