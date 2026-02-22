@@ -13,10 +13,6 @@ void print_help() {
     printf("    exit            - exit the program\n");
 }
 
-void list_directory() {
-    // 
-}
-
 void run_command(char *command) {
     char *args[10]; // create an array to store the arguments
     int i = 0;
