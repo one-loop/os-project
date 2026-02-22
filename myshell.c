@@ -13,7 +13,7 @@ void print_help() {
     printf("    exit            - exit the program\n");
 }
 
-void parse_redirections(char *command, char **outfile, char **infile, char **errfile) { // helper function to parse redirections from the command string
+int parse_redirections(char *command, char **outfile, char **infile, char **errfile) { // Returns 0 on success, -1 on error
     // check for error redirection
     char *err_redir = strstr(command, "2>");
     if (err_redir != NULL) {
@@ -25,6 +25,10 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
         while (end > err_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
             *end = '\0';
             end--;
+        }
+        if (strlen(err_redir) == 0) {
+            fprintf(stderr, "Error output file not specified.\n");
+            return -1;
         }
         *errfile = err_redir;
     }
@@ -42,6 +46,10 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
             *end = '\0';
             end--;
         }
+        if (strlen(out_redir) == 0) {
+            fprintf(stderr, "Output file not specified.\n");
+            return -1;
+        }
         *outfile = out_redir; // file name to send output to
     }
 
@@ -58,8 +66,13 @@ void parse_redirections(char *command, char **outfile, char **infile, char **err
             *end = '\0';
             end--;
         }
+        if (strlen(in_redir) == 0) {
+            fprintf(stderr, "Input file not specified.\n");
+            return -1;
+        }
         *infile = in_redir; // set file name to take input from
     }
+    return 0; // Success
 }
 
 void run_command(char *command) {
@@ -71,7 +84,9 @@ void run_command(char *command) {
     char *errfile = NULL;
 
     // Parse all redirections
-    parse_redirections(command, &outfile, &infile, &errfile); // use the helper function to parse redirections and update the command string accordingly
+    if (parse_redirections(command, &outfile, &infile, &errfile) == -1) {
+        return; // Error already printed
+    }
 
     // tokenize the input command (split by spaces to separate arguments)
     char *token = strtok(command, " ");
@@ -102,7 +117,7 @@ void run_command(char *command) {
         if (infile != NULL) {
             int fd = open(infile, O_RDONLY);
             if (fd < 0) {
-                perror("open");
+                fprintf(stderr, "Error: Cannot open input file '%s': File not found.\n", infile);
                 exit(1);
             }
             dup2(fd, 0); // replace stdin with the file 
@@ -123,7 +138,7 @@ void run_command(char *command) {
         // e.g. child will call execvp("ls", {"ls", "-l", NULL});
         execvp(args[0], args); // child becomes /bin/ls
 
-        perror("command failed"); // only runs if exec fails
+        fprintf(stderr, "Command not found: %s\n", args[0]); // only runs if exec fails
         exit(1);
     } else {
         // running in parent process
@@ -140,7 +155,7 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     if (infile != NULL) {
         int fd = open(infile, O_RDONLY);
         if (fd < 0) {
-            perror("open");
+            fprintf(stderr, "Error: Cannot open input file '%s': File not found.\n", infile);
             exit(1);
         }
         dup2(fd, 0);
@@ -180,7 +195,7 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     
     // Execute command
     execvp(args[0], args);
-    perror("command failed");
+    fprintf(stderr, "Command not found: %s\n", args[0]);
     exit(1);
 }
 
@@ -199,10 +214,27 @@ void run_multi_piped_command(char *command) {
     int cmd_idx = 0;
     char *token = strtok(command, "|");
     while (token != NULL && cmd_idx < num_commands) {
-        // Trim leading/trailing spaces
+        // Trim leading spaces
         while (*token == ' ') token++;
+        // Trim trailing spaces
+        char *end = token + strlen(token) - 1;
+        while (end > token && (*end == ' ' || *end == '\n' || *end == '\r')) {
+            *end = '\0';
+            end--;
+        }
+        // Check if command is empty
+        if (strlen(token) == 0) {
+            fprintf(stderr, "Empty command between pipes.\n");
+            return;
+        }
         commands[cmd_idx++] = token;
         token = strtok(NULL, "|");
+    }
+    
+    // Check if last command is missing (e.g., "cmd1 |")
+    if (cmd_idx < num_commands) {
+        fprintf(stderr, "Command missing after pipe.\n");
+        return;
     }
     
     // We need (num_commands - 1) pipes to connect num_commands commands
@@ -245,7 +277,9 @@ void run_multi_piped_command(char *command) {
             
             // Parse redirections for this command
             char *outfile = NULL, *infile = NULL, *errfile = NULL;
-            parse_redirections(commands[i], &outfile, &infile, &errfile);
+            if (parse_redirections(commands[i], &outfile, &infile, &errfile) == -1) {
+                exit(1); // Error in parsing redirections
+            }
             
             // Execute the command with its redirections
             execute_command_with_redirections(commands[i], infile, outfile, errfile);
