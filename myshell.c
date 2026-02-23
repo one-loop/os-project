@@ -5,13 +5,6 @@
 #include <sys/wait.h> // wait
 #include <fcntl.h> // for open() 
 
-void print_help() {
-    printf("Available commands: \n");
-    printf("    help            - show this help message\n");
-    printf("    ls              - list files in current directory\n");
-    printf("    ls -l           - list \n");
-    printf("    exit            - exit the program\n");
-}
 
 int parse_redirections(char *command, char **outfile, char **infile, char **errfile) { // Returns 0 on success, -1 on error
     // check for error redirection
