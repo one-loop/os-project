@@ -1,13 +1,1 @@
-error.log
-hello
-hello.c
-input.txt
-myshell
-myshell.c
-output.txt
-README.md
-so
-sorted.txt
-test_combinations.sh
-test.txt
-unsorted.txt
+"hello world"
