@@ -5,6 +5,76 @@
 #include <sys/wait.h> // wait
 #include <fcntl.h> // for open() 
 
+void unescape_in_place(char *s) {
+    char *src = s;
+    char *dst = s;
+
+    while (*src != '\0') {
+        if (*src == '\\' && *(src + 1) != '\0') {
+            src++;
+            if (*src == 'n') {
+                *dst++ = '\n';
+            } else if (*src == 't') {
+                *dst++ = '\t';
+            } else if (*src == 'r') {
+                *dst++ = '\r';
+            } else if (*src == '\\') {
+                *dst++ = '\\';
+            } else if (*src == '"') {
+                *dst++ = '"';
+            } else {
+                *dst++ = *src;
+            }
+            src++;
+            continue;
+        }
+
+        *dst++ = *src++;
+    }
+
+    *dst = '\0';
+}
+
+// tokenize command line while preserving quoted strings as one argument.
+// supports both "double quotes" and 'single quotes'.
+int tokenize_command(char *command, char **args, int max_args) {
+    int argc = 0;
+    char *p = command;
+
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+        if (argc >= max_args - 1) break;
+
+        if (*p == '"' || *p == '\'') {
+            char quote = *p++;
+            args[argc++] = p;
+            while (*p != '\0' && *p != quote) p++;
+            if (*p == quote) {
+                *p = '\0';
+                // Decode escape sequences in double-quoted strings.
+                if (quote == '"') {
+                    unescape_in_place(args[argc - 1]);
+                }
+                p++;
+            } else {
+                fprintf(stderr, "Error: Unmatched quote in command.\n");
+                return -1;
+            }
+        } else {
+            args[argc++] = p;
+            while (*p != '\0' && *p != ' ' && *p != '\t') p++;
+            if (*p != '\0') {
+                *p = '\0';
+                p++;
+            }
+        }
+    }
+
+    args[argc] = NULL;
+    return argc;
+}
+
 
 int parse_redirections(char *command, char **outfile, char **infile, char **errfile) { // Returns 0 on success, -1 on error
     // check for error redirection
@@ -69,8 +139,7 @@ int parse_redirections(char *command, char **outfile, char **infile, char **errf
 }
 
 void run_command(char *command) {
-    char *args[10]; // create an array to store the arguments
-    int i = 0;
+    char *args[64]; // create an array to store the arguments
 
     char *outfile = NULL;
     char *infile = NULL;
@@ -81,14 +150,11 @@ void run_command(char *command) {
         return; // Error already printed
     }
 
-    // tokenize the input command (split by spaces to separate arguments)
-    char *token = strtok(command, " ");
-    while (token != NULL && i < 10 - 1) {
-        args[i++] = token;
-        token = strtok(NULL, " ");
+    // tokenize the input command and preserve quoted strings
+    int argc = tokenize_command(command, args, 64);
+    if (argc <= 0) {
+        return;
     }
-    // The args array should end in NULL (e.g. {"ls", "-l", NULL})
-    args[i] = NULL; // very important
 
     pid_t pid = fork();
 
@@ -140,7 +206,7 @@ void run_command(char *command) {
 
 // Helper function to execute a single command with redirections
 void execute_command_with_redirections(char *cmd, char *infile, char *outfile, char *errfile) {
-    char *args[10];
+    char *args[64];
     
     // Handle input redirection if present
     if (infile != NULL) {
@@ -175,14 +241,12 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
         close(fd);
     }
     
-    // Parse cmd into args
-    int i = 0;
-    char *token = strtok(cmd, " ");
-    while (token != NULL && i < 10 - 1) {
-        args[i++] = token;
-        token = strtok(NULL, " ");
+    // Parse cmd into args while preserving quoted strings
+    int argc = tokenize_command(cmd, args, 64);
+    if (argc <= 0) {
+        fprintf(stderr, "Error: Empty command.\n");
+        exit(1);
     }
-    args[i] = NULL;
     
     // Execute command
     execvp(args[0], args);
