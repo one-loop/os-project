@@ -18,3 +18,35 @@ A custom remote shell/CLI written in **C** for the NYU Abu Dhabi Operating Syste
 - **Presents a simple prompt:** a single `$` on a line; the `exit` command terminates the shell.
 
 Phase 1 focuses on implementing this behavior in C on a Linux environment, with clear design, error handling, and a Makefile for building on the course’s remote Linux server.
+
+## How to compile
+
+From the project directory (the one containing the `Makefile`):
+
+```bash
+make
+```
+
+This compiles `main.c`, `parser.c`, `executor.c`, and `pipeline.c` into object files and links them into the **`myshell`** executable.
+
+To remove the binary and object files:
+
+```bash
+make clean
+```
+
+**Requirements:** `gcc` and `make` (as on the course remote Linux server).
+
+## How to run
+
+```bash
+./myshell
+```
+
+You will see a `$` prompt. Type shell commands as you would in a normal Unix shell. To quit:
+
+```bash
+exit
+```
+
+You can also end input with **Ctrl-D** (EOF), which exits the shell.
