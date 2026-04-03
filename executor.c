@@ -1,5 +1,6 @@
 #include "executor.h"
 #include "parser.h"
+#include "builtins.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,11 @@ void run_command(char *command) {
             close(fd);
         }
 
+        // Run builtins in the child so they respect redirections.
+        if (run_builtin(args)) {
+            exit(0);
+        }
+
         execvp(args[0], args);
         fprintf(stderr, "Command not found: %s\n", args[0]);
         exit(1);
@@ -108,6 +114,11 @@ void execute_command_with_redirections(char *cmd, char *infile, char *outfile, c
     if (argc == 0) {
         fprintf(stderr, "Error: Empty command.\n");
         exit(1);
+    }
+
+    // Run builtins in the pipeline stage child so they respect redirections.
+    if (run_builtin(args)) {
+        exit(0);
     }
 
     execvp(args[0], args);
