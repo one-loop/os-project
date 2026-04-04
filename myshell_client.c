@@ -58,8 +58,6 @@ static int connect_to_server(void) {
     if (network_socket == -1) {
         printf("socket creation failed\n");
         exit(EXIT_FAILURE);
-    } else {
-        printf("client: socket CREATION successful\n");
     }
 
     // specify an address for the socket we want to connect to
@@ -91,8 +89,6 @@ static int connect_to_server(void) {
         printf("There was an error making a connection to the remote socket\n\n");
         close(network_socket);
         exit(EXIT_FAILURE);
-    } else {
-        printf("Client: socket CONNECT success...\n");
     }
 
     return network_socket;
