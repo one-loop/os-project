@@ -6,6 +6,8 @@
 // builtin dispatcher for commands we choose to handle inside myshell.
 // returning 1 means "handled here", returning 0 means "let execvp handle it".
 int run_builtin(char **args) {
+    // function to run builtin commands like echo, cd, pwd, etc.
+    // handles -n and -e flags for echo, and cd for change directory
     // no argv means no builtin work to do.
     if (args == NULL || args[0] == NULL) {
         return 0;

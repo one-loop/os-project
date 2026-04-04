@@ -7,6 +7,10 @@
 #include <unistd.h>
 
 int main(void) {
+    // main function to run the shell. It prints $, thenr eads a line with fgets
+    // strips the newline, handles exit, and either calls run_multi_pipe_command() 
+    // if the line contains a |, or run_command() otherwise.
+    
     // this fixed-size buffer holds one full command line from the user.
     // phase 1 intentionally keeps input handling simple with fgets.
     char command[256];

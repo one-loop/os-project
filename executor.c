@@ -11,6 +11,8 @@
 #define MAX_ARGS 64
 
 void run_command(char *command) {
+    // function to parse the command string -- redirections, tokenize, fork(), child applies dup2() for stdin/stdout/stderr files
+    // runs run_builtin() if the command is a builtin, otherwise execvp() the command
     // args becomes the argv array passed into execvp.
     char *args[MAX_ARGS];
     // these pointers are set by parse_redirections when operators are present.

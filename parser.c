@@ -40,6 +40,8 @@ static void unescape_in_place(char *s) {
     *dst = '\0';
 }
 
+// function to tokenize the command string into arguments
+// supports single and double quotes, and escapes inside double quotes
 int tokenize_command(char *command, char **args, int max_args) {
     // argc is how many tokens we produced so far.
     int argc = 0;
@@ -78,7 +80,7 @@ int tokenize_command(char *command, char **args, int max_args) {
             while (*p != '\0' && *p != ' ' && *p != '\t') p++;
             if (*p != '\0') {
                 *p = '\0';
-                p++;
+                p++; // move to the next character
             }
         }
     }
@@ -89,13 +91,16 @@ int tokenize_command(char *command, char **args, int max_args) {
 }
 
 int parse_redirections(char *command, char **outfile, char **infile, char **errfile) {
+    // fuhnction to find 2>, > and <, splits the command string in place, and fills pointers
+    // to file names for stdout, stdin and stderr
+
     // parse stderr redirection first so "2>" is not mistaken for plain ">".
     char *err_redir = strstr(command, "2>");
     if (err_redir != NULL) {
         // split command and target filename in-place.
         *err_redir = '\0';
         err_redir += 2;
-        while (*err_redir == ' ') err_redir++;
+        while (*err_redir == ' ') err_redir++; // skip leading spaces
 
         // trim trailing spaces/newlines from filename.
         char *end = err_redir + strlen(err_redir) - 1;
@@ -114,38 +119,44 @@ int parse_redirections(char *command, char **outfile, char **infile, char **errf
 
     // parse stdout redirection.
     char *out_redir = strchr(command, '>');
+    // if there is a >, then we need to split the command string in place and 
+    // fill the pointer to the file name for stdout
     if (out_redir != NULL) {
-        *out_redir = '\0';
+        *out_redir = '\0'; // null terminate the command string at the > operator
         out_redir++;
-        while (*out_redir == ' ') out_redir++;
+        while (*out_redir == ' ') out_redir++; // skip leading spaces
         char *end = out_redir + strlen(out_redir) - 1;
         while (end > out_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
-            *end = '\0';
-            end--;
+            *end = '\0'; // null terminate the filename at the end of the string
+            end--; // trim trailing spaces/newlines from filename
         }
         if (strlen(out_redir) == 0) {
+            // if the filename is empty, then we need to print an error message
             fprintf(stderr, "Output file not specified.\n");
             return -1;
         }
-        *outfile = out_redir;
+        *outfile = out_redir; // set the pointer to the file name for stdout
     }
 
     // parse stdin redirection.
     char *in_redir = strchr(command, '<');
+    // if there is a <, then we need to split the command string in place and 
+    // fill the pointer to the file name for stdin
     if (in_redir != NULL) {
-        *in_redir = '\0';
+        *in_redir = '\0'; // null terminate the command string at the < operator
         in_redir++;
-        while (*in_redir == ' ') in_redir++;
+        while (*in_redir == ' ') in_redir++; // skip leading spaces
         char *end = in_redir + strlen(in_redir) - 1;
         while (end > in_redir && (*end == ' ' || *end == '\n' || *end == '\r')) {
-            *end = '\0';
-            end--;
+            *end = '\0'; // null terminate the filename at the end of the string
+            end--; // trim trailing spaces/newlines from filename
         }
         if (strlen(in_redir) == 0) {
+            // if the filename is empty, then we need to print an error message
             fprintf(stderr, "Input file not specified.\n");
-            return -1;
+            return -1; // return -1 to indicate an error
         }
-        *infile = in_redir;
+        *infile = in_redir; // set the pointer to the file name for stdin
     }
 
     // success means redirection pointers (if any) are ready for the executor.
