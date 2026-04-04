@@ -9,6 +9,9 @@
 #include <sys/wait.h>
 
 void run_multi_piped_command(char *command) {
+    // function that splits |, creates pipe()s, then forks one child per stage
+    // and wirses stdin/stdout/stderr through the pipe chain, parses per-stage 
+    // redirections, then waits for all children to finish
     // first pass: count commands by counting separators.
     // number of commands = number of '|' + 1.
     int num_commands = 1;
