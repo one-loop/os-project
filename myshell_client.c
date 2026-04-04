@@ -86,7 +86,7 @@ static int connect_to_server(void) {
 
     // check for errors with the connection
     if (connection_status == -1) {
-        printf("There was an error making a connection to the remote socket\n\n");
+        printf("Failed to connect to server. Check that server is running before starting client.\n\n");
         close(network_socket);
         exit(EXIT_FAILURE);
     }
@@ -144,7 +144,6 @@ int main(void) {
         }
         server_response[MYSHELL_RESP_MAX] = '\0';
 
-        // TODO: server is expected to send printable output (wire real command results here).
         printf("%s", server_response);
     }
 

@@ -238,7 +238,6 @@ int main(void) {
             char error_msg[512];
             snprintf(error_msg, sizeof(error_msg), "Sending error message to client: \"%s\"", response_log);
             print_server_log("OUTPUT", error_msg);
-            
         } else {
             print_server_log("OUTPUT", "Sending output to client:");
             if (response[0] != '\0') {
