@@ -15,8 +15,8 @@ $(TARGET): $(OBJS)
 $(CLIENT): myshell_client.c myshell_net.h
 	$(CC) $(CFLAGS) -o $(CLIENT) myshell_client.c
 
-$(SERVER): myshell_server.c myshell_net.h
-	$(CC) $(CFLAGS) -o $(SERVER) myshell_server.c
+$(SERVER): myshell_server.c myshell_net.h parser.o executor.o pipeline.o builtins.o
+	$(CC) $(CFLAGS) -o $(SERVER) myshell_server.c parser.o executor.o pipeline.o builtins.o
 
 main.o: main.c executor.h pipeline.h
 parser.o: parser.c parser.h
