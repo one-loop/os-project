@@ -268,16 +268,17 @@ int main(void) {
         // create a new thread to handle the client (so multiple clients can be handled concurrently)
         // (each thread gets its own copy of the client socket value safely)
         if (pthread_create(&tid, NULL, handle_client, pclient) != 0) {
-            // if thread creation fails, close the client socket 
+            // if thread creation fails, close the client socket
             // and continue accepting further clients
             printf("thread creation failed\n");
             close(client_socket);
+            free(pclient);
         } else {
             num_clients++;
             printf("[INFO] Client %d connected. Assigned to Thread\n", num_clients);
+            // detach the thread so it can run independently
+            pthread_detach(tid);
         }
-        // detach the thread so it can run independently
-        pthread_detach(tid);
 
     }
     
