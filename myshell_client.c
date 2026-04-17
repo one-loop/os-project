@@ -111,10 +111,6 @@ int main(void) {
         // remove trailing newline so the server receives the same text a local shell would parse.
         command[strcspn(command, "\n")] = '\0';
 
-        if (strcmp(command, "exit") == 0) {
-            break;
-        }
-
         // skip empty lines without contacting the server
         if (command[0] == '\0') {
             continue;
@@ -145,6 +141,11 @@ int main(void) {
         server_response[MYSHELL_RESP_MAX] = '\0';
 
         printf("%s", server_response);
+
+        // after forwarding "exit" and printing the server goodbye message, terminate client loop.
+        if (strcmp(command, "exit") == 0) {
+            break;
+        }
     }
 
     close(network_socket);
