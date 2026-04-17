@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <errno.h>
 
@@ -134,64 +135,10 @@ static size_t execute_and_capture(const char *command, char *response, size_t re
     return used;
 }
 
-int main(void) {
-    // create a socket
-    int server_socket;
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
-    // check for fail error
-    if (server_socket == -1) {
-        printf("socket creation failed\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // allow quick restart after the previous process still holds TIME_WAIT 
-    int opt = 1;
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt SO_REUSEADDR failed");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    // define server address structure
-    struct sockaddr_in server_address;
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(MYSHELL_PORT);
-    server_address.sin_addr.s_addr = INADDR_ANY;
-
-    // bind the socket to the specified IP and port
-    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
-        printf("socket binding failed\n");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    // after it is bound, we can listen for connections
-    // 2nd : how many connections can be waiting for this socket at one point in time so at least 1
-    if (listen(server_socket, 5) < 0) {
-        printf("socket listening failed\n");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    print_server_log("INFO", "Server started, waiting for client connections...");
-
-    struct sockaddr_in client_address;
-    socklen_t client_len = sizeof(client_address);
-
-    // when we accept a connection, we get back the client socket which we will read/write on
-    int client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_len);
-
-    if (client_socket < 0) {
-        printf("socket accepting failed\n");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    print_server_log("INFO", "Client connected.");
-
-    // parent listening socket is not needed for single-client stub; close it so the port is not held twice
-    close(server_socket);
+void *handle_client(void *arg) {
+    int client_socket = *(int *)arg;
+    free(arg); // free the memory allocated for the client socket (each thread gets its own copy of the socket value safely)
 
     // main loop: server listens for commands from the client and executes them.
     for (;;) {
@@ -199,9 +146,7 @@ int main(void) {
         memset(cmd_packet, 0, sizeof(cmd_packet));
 
         int r = recv_all(client_socket, cmd_packet, sizeof(cmd_packet));
-        if (r != 0) {
-            break;
-        }
+        if (r != 0) break;
 
         // if client asks to exit, close this session loop cleanly.
         if (strcmp(cmd_packet, "exit") == 0) {
@@ -252,6 +197,90 @@ int main(void) {
         }
     }
 
+    // close the client socket
     close(client_socket);
+    return NULL;
+}
+
+int main(void) {
+    // create a socket
+    int server_socket;
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    // check for fail error
+    if (server_socket == -1) {
+        printf("socket creation failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // allow quick restart after the previous process still holds TIME_WAIT 
+    int opt = 1;
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEADDR failed");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    // define server address structure
+    struct sockaddr_in server_address;
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(MYSHELL_PORT);
+    server_address.sin_addr.s_addr = INADDR_ANY;
+
+    // bind the socket to the specified IP and port
+    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+        printf("socket binding failed\n");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    // after it is bound, we can listen for connections
+    // 2nd : how many connections can be waiting for this socket at one point in time so at least 1
+    if (listen(server_socket, 5) < 0) {
+        printf("socket listening failed\n");
+        close(server_socket);
+        exit(EXIT_FAILURE);
+    }
+
+    print_server_log("INFO", "Server started, waiting for client connections...");
+
+    int num_clients = 0;
+
+    while (1) {
+        pthread_t tid;
+        struct sockaddr_in client_address;
+        socklen_t client_len = sizeof(client_address);
+
+        // accept a connection from a client
+        // when we accept a connection, we get back the client socket which we will read/write on
+        int client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_len);
+
+        if (client_socket < 0) {
+            printf("socket accepting failed\n");
+            close(server_socket);
+            exit(EXIT_FAILURE);
+        }
+
+        // allocate memory for the client socket
+        int *pclient = malloc(sizeof(int));
+        *pclient = client_socket;
+
+        // create a new thread to handle the client (so multiple clients can be handled concurrently)
+        // (each thread gets its own copy of the client socket value safely)
+        if (pthread_create(&tid, NULL, handle_client, pclient) != 0) {
+            // if thread creation fails, close the client socket
+            // and continue accepting further clients
+            printf("thread creation failed\n");
+            close(client_socket);
+            free(pclient);
+        } else {
+            num_clients++;
+            printf("[INFO] Client %d connected. Assigned to Thread\n", num_clients);
+            // detach the thread so it can run independently
+            pthread_detach(tid);
+        }
+
+    }
+    
     return 0;
 }

@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99
+CFLAGS = -Wall -Wextra -std=c99 -pthread
 
 TARGET = myshell
 OBJS = main.o parser.o executor.o pipeline.o builtins.o
