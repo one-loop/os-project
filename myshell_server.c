@@ -173,7 +173,9 @@ static void *handle_client(void *arg) {
         int r = recv_all(client_socket, cmd_packet, sizeof(cmd_packet));
         if (r != 0) {
             if (r == -2) {
-                print_client_log("INFO", ctx, "Client disconnected.");
+                char disconnect_msg[128];
+                snprintf(disconnect_msg, sizeof(disconnect_msg), "Client #%d disconnected.", ctx->client_id);
+                print_server_log("INFO", disconnect_msg);
             } else {
                 print_client_log("ERROR", ctx, "Socket receive failed.");
             }
@@ -193,7 +195,9 @@ static void *handle_client(void *arg) {
             snprintf(bye, sizeof(bye), "Disconnected from server.\n");
             (void)send_all(client_socket, bye, sizeof(bye));
 
-            print_client_log("INFO", ctx, "Client disconnected.");
+            char disconnect_msg[128];
+            snprintf(disconnect_msg, sizeof(disconnect_msg), "Client #%d disconnected.", ctx->client_id);
+            print_server_log("INFO", disconnect_msg);
             break;
         }
 
