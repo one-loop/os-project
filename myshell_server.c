@@ -61,6 +61,7 @@ typedef struct task {
     int remaining_burst; // decremented by scheduler
     int executed_units; // total simulated units already executed
     int rounds_executed; // round 0 -> first quantum
+    int demo_completion_line_written; // ensures Demo N/N line is appended once
     unsigned long arrival_seq; // fcfs tie-breaker
 
 
@@ -78,6 +79,11 @@ typedef struct task {
 // forward declaration because scheduler loop calls this helper before its definition.
 static size_t execute_and_capture(const char *command, char *response, size_t response_size);
 static void print_server_log(const char *tag, const char *message);
+static void print_short_client_cmd(const client_context_t *ctx, const char *cmd);
+static void print_short_client_status(const client_context_t *ctx, const char *status);
+static void print_short_task_line(const task_t *task, const char *label, int value);
+static void append_sched_history(const task_t *task);
+static void print_sched_summary_if_idle(void);
 
 // global counters for ids/sequencing
 static pthread_mutex_t g_task_id_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -193,6 +199,7 @@ static task_t *task_create_from_command(const client_context_t *ctx, const char 
     task->state = TASK_WAITING;
     task->rounds_executed = 0;
     task->executed_units = 0;
+    task->demo_completion_line_written = 0;
     task->arrival_seq = next_arrival_seq();
     task->response_ready = 0;
     task->cancel_requested = 0;
@@ -204,11 +211,15 @@ static task_t *task_create_from_command(const client_context_t *ctx, const char 
 
     pthread_mutex_init(&task->response_mutex, NULL);
     pthread_cond_init(&task->done_cv, NULL);
+
+    // short created line for task lifecycle visibility.
+    print_short_task_line(task, "created", task->remaining_burst);
+
     return task;
 }
 
 // queue helper that appends task at tail in O(1) and notifies scheduler.
-static void scheduler_enqueue_task(task_t *task) {
+static void scheduler_enqueue_task(task_t *task, int log_enqueued) {
     pthread_mutex_lock(&g_queue_mutex);
     task->next = NULL;
     if (g_queue_tail == NULL) {
@@ -221,6 +232,8 @@ static void scheduler_enqueue_task(task_t *task) {
     g_queue_size++;
     pthread_cond_signal(&g_queue_not_empty);
     pthread_mutex_unlock(&g_queue_mutex);
+
+    (void)log_enqueued;
 }
 
 // queue helper that removes and returns the head task in O(1).
@@ -312,6 +325,8 @@ static task_t *scheduler_select_next_task_locked(void) {
         g_queue_size--;
     }
 
+    // record which task the scheduler selected before the caller executes it.
+
     return best;
 }
 
@@ -357,6 +372,10 @@ static void complete_task_cancelled(task_t *task, const char *reason) {
     task->cancel_requested = 1;
     pthread_cond_signal(&task->done_cv);
     pthread_mutex_unlock(&task->response_mutex);
+
+    // cancelled tasks are logged once the state change is visible to waiters.
+    char cancel_msg[256];
+    snprintf(cancel_msg, sizeof(cancel_msg), "cancelled: %s", reason);
 }
 
 // remove all waiting tasks for one client and mark running task for cancellation.
@@ -439,12 +458,14 @@ static int should_preempt_program_task(task_t *current_task) {
 // simulate one scheduled time slice for a program task and append per-tick output.
 // each tick represents one time unit and runs for one second to visualize scheduling.
 static void run_program_slice(task_t *task, char *response, size_t response_size) {
-    size_t used = 0;
+    size_t used = strnlen(response, response_size);
     int quantum = (task->rounds_executed == 0) ? QUANTUM_FIRST_ROUND : QUANTUM_LATER_ROUNDS;
     int slice = quantum;
     if (task->remaining_burst < slice) {
         slice = task->remaining_burst;
     }
+
+    // show the current time slice configuration before execution.
 
     for (int i = 0; i < slice; i++) {
         // if client disconnected while task is running, stop immediately.
@@ -457,18 +478,15 @@ static void run_program_slice(task_t *task, char *response, size_t response_size
             if (n > 0 && (size_t)n < response_size - used) {
                 used += (size_t)n;
             }
+
             break;
         }
 
-        task->executed_units++;
-        task->remaining_burst--;
-
         int n = snprintf(response + used,
                          response_size - used,
-                         "task #%d (%s): step %d\n",
-                         task->task_id,
-                         task->command,
-                         task->executed_units);
+                         "Demo %d/%d\n",
+                         task->executed_units,
+                         task->predicted_burst);
         if (n < 0) {
             break;
         }
@@ -478,18 +496,15 @@ static void run_program_slice(task_t *task, char *response, size_t response_size
         }
         used += (size_t)n;
 
+        task->executed_units++;
+        task->remaining_burst--;
+
         // this sleep makes the scheduler behavior visible in logs/demo output.
         sleep(1);
 
         // evaluate selective preemption at each tick boundary.
         if (task->remaining_burst > 0 && should_preempt_program_task(task)) {
-            int n = snprintf(response + used,
-                             response_size - used,
-                             "task #%d preempted early due to shorter/new higher-priority task\n",
-                             task->task_id);
-            if (n > 0 && (size_t)n < response_size - used) {
-                used += (size_t)n;
-            }
+            // selective preemption is part of the scheduler policy for Phase 4.
             break;
         }
     }
@@ -498,6 +513,18 @@ static void run_program_slice(task_t *task, char *response, size_t response_size
     if (task->state == TASK_CANCELLED) {
         // state already set by cancellation path.
     } else if (task->remaining_burst <= 0) {
+        // append the final Demo N/N line exactly once when execution fully completes.
+        if (!task->demo_completion_line_written) {
+            int n = snprintf(response + used,
+                             response_size - used,
+                             "Demo %d/%d\n",
+                             task->predicted_burst,
+                             task->predicted_burst);
+            if (n > 0 && (size_t)n < response_size - used) {
+                used += (size_t)n;
+            }
+            task->demo_completion_line_written = 1;
+        }
         task->state = TASK_DONE;
     } else {
         task->state = TASK_WAITING;
@@ -531,6 +558,13 @@ static void *scheduler_loop(void *arg) {
         task->state = TASK_RUNNING;
         g_last_scheduled_task_id = task->task_id;
 
+        // print start for first dispatch and running for resumed dispatches.
+        if (task->rounds_executed == 0) {
+            print_short_task_line(task, "started", task->predicted_burst);
+        } else {
+            print_short_task_line(task, "running", task->remaining_burst);
+        }
+
         // if client already disconnected, cancel before spending cpu time.
         if (!is_client_connected(task->client_id)) {
             complete_task_cancelled(task, "client disconnected");
@@ -547,27 +581,28 @@ static void *scheduler_loop(void *arg) {
             task->state = TASK_DONE;
         } else {
             // program tasks run for one quantum and may be requeued if unfinished.
-            memset(task->response, 0, sizeof(task->response));
             run_program_slice(task, task->response, sizeof(task->response));
         }
 
         if (task->state == TASK_DONE) {
+            // completion is signaled here; final response delivery is logged by client thread.
+            if (task->type == TASK_TYPE_PROGRAM) {
+                append_sched_history(task);
+            }
             pthread_mutex_lock(&task->response_mutex);
             task->response_ready = 1;
             pthread_cond_signal(&task->done_cv);
             pthread_mutex_unlock(&task->response_mutex);
         } else if (task->state == TASK_CANCELLED) {
             complete_task_cancelled(task, "client disconnected while running");
+            if (task->type == TASK_TYPE_PROGRAM) {
+                append_sched_history(task);
+            }
         } else {
             // unfinished program tasks are pushed back for future rounds.
-            char preempt_msg[256];
-            snprintf(preempt_msg,
-                     sizeof(preempt_msg),
-                     "task #%d preempted, remaining=%d, requeued",
-                     task->task_id,
-                     task->remaining_burst);
-            print_server_log("SCHED", preempt_msg);
-            scheduler_enqueue_task(task);
+            append_sched_history(task);
+            print_short_task_line(task, "waiting", task->remaining_burst);
+            scheduler_enqueue_task(task, 0);
         }
 
         pthread_mutex_lock(&g_queue_mutex);
@@ -575,6 +610,7 @@ static void *scheduler_loop(void *arg) {
             g_running_task = NULL;
         }
         pthread_mutex_unlock(&g_queue_mutex);
+
     }
     return NULL;
 }
@@ -607,6 +643,70 @@ static void print_client_log(const char *tag, const client_context_t *ctx, const
            message);
     fflush(stdout);
     pthread_mutex_unlock(&g_log_mutex);
+}
+
+// short command line: "[5] >>> ./demo 12"
+static void print_short_client_cmd(const client_context_t *ctx, const char *cmd) {
+    pthread_mutex_lock(&g_log_mutex);
+    printf("[%d] >>> %s\n", ctx->client_id, cmd);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_log_mutex);
+}
+
+// short status line: "[5] <<< client connected".
+static void print_short_client_status(const client_context_t *ctx, const char *status) {
+    pthread_mutex_lock(&g_log_mutex);
+    printf("[%d] <<< %s\n", ctx->client_id, status);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_log_mutex);
+}
+
+// short task line: "(5) --- created (12)".
+static void print_short_task_line(const task_t *task, const char *label, int value) {
+    pthread_mutex_lock(&g_log_mutex);
+    printf("(%d) --- %s (%d)\n", task->client_id, label, value);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_log_mutex);
+}
+
+// scheduling history printed as a compact summary line.
+static pthread_mutex_t g_sched_hist_mutex = PTHREAD_MUTEX_INITIALIZER;
+static char g_sched_history[4096];
+static size_t g_sched_history_len = 0;
+
+static void append_sched_history(const task_t *task) {
+    pthread_mutex_lock(&g_sched_hist_mutex);
+    int n = snprintf(g_sched_history + g_sched_history_len,
+                     sizeof(g_sched_history) - g_sched_history_len,
+                     "P%d-(%d)-",
+                     task->client_id,
+                     task->remaining_burst);
+    if (n > 0 && (size_t)n < sizeof(g_sched_history) - g_sched_history_len) {
+        g_sched_history_len += (size_t)n;
+    }
+    pthread_mutex_unlock(&g_sched_hist_mutex);
+}
+
+static void print_sched_summary_if_idle(void) {
+    pthread_mutex_lock(&g_queue_mutex);
+    int empty = (g_queue_size == 0 && g_running_task == NULL);
+    pthread_mutex_unlock(&g_queue_mutex);
+
+    pthread_mutex_lock(&g_sched_hist_mutex);
+    if (empty && g_sched_history_len > 0) {
+        // trim trailing dash
+        if (g_sched_history_len > 0 && g_sched_history[g_sched_history_len - 1] == '-') {
+            g_sched_history[g_sched_history_len - 1] = '\0';
+        }
+        pthread_mutex_lock(&g_log_mutex);
+        printf("%s\n", g_sched_history);
+        fflush(stdout);
+        pthread_mutex_unlock(&g_log_mutex);
+        // reset history after summary is printed.
+        g_sched_history_len = 0;
+        g_sched_history[0] = '\0';
+    }
+    pthread_mutex_unlock(&g_sched_hist_mutex);
 }
 
 static int send_all(int fd, const void *buf, size_t len) {
@@ -744,22 +844,18 @@ static void *handle_client(void *arg) {
             set_client_connected(ctx->client_id, 0);
             cancel_tasks_for_client(ctx->client_id);
             if (r == -2) {
-                char disconnect_msg[128];
-                snprintf(disconnect_msg, sizeof(disconnect_msg), "Client #%d disconnected.", ctx->client_id);
-                print_server_log("INFO", disconnect_msg);
+                print_short_client_status(ctx, "client disconnected");
             } else {
                 print_client_log("ERROR", ctx, "Socket receive failed.");
             }
             break;
         }
 
-        char received_msg[512];
-        snprintf(received_msg, sizeof(received_msg), "Received command: \"%s\"", cmd_packet);
-        print_client_log("RECEIVED", ctx, received_msg);
+        // print one short command line for each received request.
+        print_short_client_cmd(ctx, cmd_packet);
 
         // if the client sent "exit", send a goodbye message and break the loop to close the connection. Otherwise, execute the command and send back the response.
         if (strcmp(cmd_packet, "exit") == 0) {
-            print_client_log("INFO", ctx, "Client requested disconnect. Closing connection.");
             set_client_connected(ctx->client_id, 0);
             cancel_tasks_for_client(ctx->client_id);
 
@@ -768,9 +864,7 @@ static void *handle_client(void *arg) {
             snprintf(bye, sizeof(bye), "Disconnected from server.\n");
             (void)send_all(client_socket, bye, sizeof(bye));
 
-            char disconnect_msg[128];
-            snprintf(disconnect_msg, sizeof(disconnect_msg), "Client #%d disconnected.", ctx->client_id);
-            print_server_log("INFO", disconnect_msg);
+            print_short_client_status(ctx, "client disconnected");
             break;
         }
 
@@ -782,7 +876,7 @@ static void *handle_client(void *arg) {
         }
 
         // enqueue into global waiting queue; scheduler thread will execute it.
-        scheduler_enqueue_task(task);
+        scheduler_enqueue_task(task, 1);
 
         // block until scheduler marks this task done and signals done_cv.
         pthread_mutex_lock(&task->response_mutex);
@@ -791,31 +885,6 @@ static void *handle_client(void *arg) {
         }
         pthread_mutex_unlock(&task->response_mutex);
 
-        // if the scheduler response looks like an error, log it as an error path.
-        if (strncmp(task->response, "Command not found:", 18) == 0 || strncmp(task->response, "Error:", 6) == 0) {
-            char response_log[MYSHELL_RESP_MAX + 1];
-            memset(response_log, 0, sizeof(response_log));
-            strncpy(response_log, task->response, sizeof(response_log) - 1);
-            response_log[strcspn(response_log, "\r\n")] = '\0';
-            
-            char server_error_log[512];
-            snprintf(server_error_log, sizeof(server_error_log), "Command not found: \"%s\"", cmd_packet);
-            print_client_log("ERROR", ctx, server_error_log);
-            
-            char error_msg[512];
-            snprintf(error_msg, sizeof(error_msg), "Sending error message to client: \"%s\"", response_log);
-            print_client_log("OUTPUT", ctx, error_msg);
-        } else { // normal output case
-            print_client_log("OUTPUT", ctx, "Sending output to client:");
-            if (task->response[0] != '\0') {
-                // lock around raw response dump to keep multi-line output coherent.
-                pthread_mutex_lock(&g_log_mutex);
-                printf("%s", task->response);
-                fflush(stdout);
-                pthread_mutex_unlock(&g_log_mutex);
-            }
-        }
-
         // send the response back to the client. If sending fails, log an error and break the loop to close the connection.
         if (send_all(client_socket, task->response, sizeof(task->response)) != 0) {
             print_client_log("ERROR", ctx, "Socket send failed.");
@@ -823,6 +892,19 @@ static void *handle_client(void *arg) {
             cancel_tasks_for_client(ctx->client_id);
             task_destroy(task);
             break;
+        }
+
+        // print concise delivery line and final state after sending response.
+        size_t payload_len = strnlen(task->response, sizeof(task->response));
+        pthread_mutex_lock(&g_log_mutex);
+        printf("[%d] <<< %zu bytes sent\n", ctx->client_id, payload_len);
+        fflush(stdout);
+        pthread_mutex_unlock(&g_log_mutex);
+        print_short_task_line(task, "ended", task->remaining_burst);
+
+        // print scheduling summary after response delivery once execution is truly idle.
+        if (task->type == TASK_TYPE_PROGRAM) {
+            print_sched_summary_if_idle();
         }
 
         // client thread owns final cleanup after response delivery.
@@ -875,7 +957,12 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
-    print_server_log("INFO", "Server started, waiting for client connections...");
+    pthread_mutex_lock(&g_log_mutex);
+    printf("------------------------------\n");
+    printf("| Hello, Server Started |\n");
+    printf("------------------------------\n");
+    fflush(stdout);
+    pthread_mutex_unlock(&g_log_mutex);
 
     // start scheduler thread before accepting clients so submitted tasks have a consumer.
     if (pthread_create(&scheduler_tid, NULL, scheduler_loop, NULL) != 0) {
@@ -926,16 +1013,8 @@ int main(void) {
             strncpy(ctx->client_ip, "unknown", sizeof(ctx->client_ip) - 1);
         }
 
-        // log the new connection with client details and assigned thread ID.
-        char connect_msg[512];
-        snprintf(connect_msg,
-                 sizeof(connect_msg),
-                 "Client #%d connected from %s:%u. Assigned to Thread-%d.",
-                 ctx->client_id,
-                 ctx->client_ip,
-                 ctx->client_port,
-                 ctx->thread_id);
-        print_server_log("INFO", connect_msg);
+        // log one concise client connection line.
+        print_short_client_status(ctx, "client connected");
 
         // create a detached worker thread to handle this client connection.
         if (pthread_create(&tid, NULL, handle_client, ctx) != 0) {

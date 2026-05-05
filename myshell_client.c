@@ -102,13 +102,15 @@ int main(void) {
     // establish one persistent tcp connection for the whole client session.
     int network_socket = connect_to_server();
 
+    printf("Connected to a server\n");
+
     // fixed-size buffer holds one full command line from the user (same idea as local myshell).
     char command[MYSHELL_CMD_MAX];
 
     // main loop: shell prompt on the client; each line is sent to the server for execution later.
     while (1) {
         // render prompt locally; the server only executes and returns output.
-        printf("$ ");
+        printf(">>> ");
 
         if (fgets(command, sizeof(command), stdin) == NULL) {
             // eof on stdin (ctrl-d) ends the client session gracefully.
