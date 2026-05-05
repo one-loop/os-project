@@ -10,6 +10,9 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#define RESP_MORE_PREFIX "MORE\n"
+#define RESP_DONE_PREFIX "DONE\n"
+
 /*
  * TCP does not guarantee one send() / recv() moves the whole buffer.
  * Without looping, the next command/response can share one stream and look "delayed" or blank.
@@ -136,22 +139,38 @@ int main(void) {
             break;
         }
 
-        char server_response[MYSHELL_RESP_MAX + 1];
-        memset(server_response, 0, sizeof(server_response));
+        // receive streamed response frames until the server sends a final done frame.
+        int done = 0;
+        while (!done) {
+            char server_response[MYSHELL_RESP_MAX + 1];
+            memset(server_response, 0, sizeof(server_response));
 
-        int rr = recv_all(network_socket, server_response, (size_t)MYSHELL_RESP_MAX);
-        if (rr != 0) {
-            if (rr == -2) {
-                printf("client: server closed the connection\n");
-            } else {
-                perror("client: recv failed");
+            int rr = recv_all(network_socket, server_response, (size_t)MYSHELL_RESP_MAX);
+            if (rr != 0) {
+                if (rr == -2) {
+                    printf("client: server closed the connection\n");
+                } else {
+                    perror("client: recv failed");
+                }
+                done = 1;
+                command[0] = '\0';
+                break;
             }
-            break;
-        }
-        // keep one extra byte for local null-termination before printf.
-        server_response[MYSHELL_RESP_MAX] = '\0';
+            // keep one extra byte for local null-termination before printf.
+            server_response[MYSHELL_RESP_MAX] = '\0';
 
-        printf("%s", server_response);
+            // decode frame prefix so one command can produce many incremental outputs.
+            if (strncmp(server_response, RESP_MORE_PREFIX, strlen(RESP_MORE_PREFIX)) == 0) {
+                printf("%s", server_response + strlen(RESP_MORE_PREFIX));
+            } else if (strncmp(server_response, RESP_DONE_PREFIX, strlen(RESP_DONE_PREFIX)) == 0) {
+                printf("%s", server_response + strlen(RESP_DONE_PREFIX));
+                done = 1;
+            } else {
+                // fallback for legacy one-frame responses.
+                printf("%s", server_response);
+                done = 1;
+            }
+        }
 
         // after forwarding "exit" and printing the server goodbye message, terminate client loop.
         if (strcmp(command, "exit") == 0) {

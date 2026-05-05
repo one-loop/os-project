@@ -19,6 +19,8 @@
 #define QUANTUM_FIRST_ROUND 3
 #define QUANTUM_LATER_ROUNDS 7
 #define MAX_CLIENT_TRACK 2048
+#define RESP_MORE_PREFIX "MORE\n"
+#define RESP_DONE_PREFIX "DONE\n"
 
 // per-client state passed to each worker thread so logs can include the
 typedef struct {
@@ -68,10 +70,12 @@ typedef struct task {
     // result delivery back to client-thread
     char response[TASK_RESP_MAX];
     int response_ready;
+    int task_finished;
     int cancel_requested;
 
     pthread_mutex_t response_mutex;
     pthread_cond_t done_cv;
+    pthread_cond_t chunk_consumed_cv;
 
     struct task *next; // queue linkage
 } task_t;
@@ -202,6 +206,7 @@ static task_t *task_create_from_command(const client_context_t *ctx, const char 
     task->demo_completion_line_written = 0;
     task->arrival_seq = next_arrival_seq();
     task->response_ready = 0;
+    task->task_finished = 0;
     task->cancel_requested = 0;
     task->next = NULL;
 
@@ -211,6 +216,7 @@ static task_t *task_create_from_command(const client_context_t *ctx, const char 
 
     pthread_mutex_init(&task->response_mutex, NULL);
     pthread_cond_init(&task->done_cv, NULL);
+    pthread_cond_init(&task->chunk_consumed_cv, NULL);
 
     // short created line for task lifecycle visibility.
     print_short_task_line(task, "created", task->remaining_burst);
@@ -337,7 +343,28 @@ static void task_destroy(task_t *task) {
     }
     pthread_mutex_destroy(&task->response_mutex);
     pthread_cond_destroy(&task->done_cv);
+    pthread_cond_destroy(&task->chunk_consumed_cv);
     free(task);
+}
+
+// publish one response frame for a task.
+// the consumer thread sends this chunk and then acknowledges consumption.
+static void publish_task_chunk(task_t *task, const char *payload, int finished) {
+    pthread_mutex_lock(&task->response_mutex);
+    while (task->response_ready && !task->cancel_requested) {
+        pthread_cond_wait(&task->chunk_consumed_cv, &task->response_mutex);
+    }
+
+    memset(task->response, 0, sizeof(task->response));
+    snprintf(task->response,
+             sizeof(task->response),
+             "%s%s",
+             finished ? RESP_DONE_PREFIX : RESP_MORE_PREFIX,
+             payload != NULL ? payload : "");
+    task->response_ready = 1;
+    task->task_finished = finished ? 1 : 0;
+    pthread_cond_signal(&task->done_cv);
+    pthread_mutex_unlock(&task->response_mutex);
 }
 
 // mark one client id as connected/disconnected for cancellation checks.
@@ -364,14 +391,11 @@ static int is_client_connected(int client_id) {
 
 // complete a task as cancelled and wake any client thread waiting on this task.
 static void complete_task_cancelled(task_t *task, const char *reason) {
-    pthread_mutex_lock(&task->response_mutex);
     task->state = TASK_CANCELLED;
-    memset(task->response, 0, sizeof(task->response));
-    snprintf(task->response, sizeof(task->response), "task #%d cancelled: %s\n", task->task_id, reason);
-    task->response_ready = 1;
     task->cancel_requested = 1;
-    pthread_cond_signal(&task->done_cv);
-    pthread_mutex_unlock(&task->response_mutex);
+    char cancel_payload[256];
+    snprintf(cancel_payload, sizeof(cancel_payload), "task #%d cancelled: %s\n", task->task_id, reason);
+    publish_task_chunk(task, cancel_payload, 1);
 
     // cancelled tasks are logged once the state change is visible to waiters.
     char cancel_msg[256];
@@ -458,7 +482,8 @@ static int should_preempt_program_task(task_t *current_task) {
 // simulate one scheduled time slice for a program task and append per-tick output.
 // each tick represents one time unit and runs for one second to visualize scheduling.
 static void run_program_slice(task_t *task, char *response, size_t response_size) {
-    size_t used = strnlen(response, response_size);
+    (void)response;
+    (void)response_size;
     int quantum = (task->rounds_executed == 0) ? QUANTUM_FIRST_ROUND : QUANTUM_LATER_ROUNDS;
     int slice = quantum;
     if (task->remaining_burst < slice) {
@@ -471,30 +496,17 @@ static void run_program_slice(task_t *task, char *response, size_t response_size
         // if client disconnected while task is running, stop immediately.
         if (!is_client_connected(task->client_id) || task->cancel_requested) {
             task->state = TASK_CANCELLED;
-            int n = snprintf(response + used,
-                             response_size - used,
-                             "task #%d cancelled while running\n",
-                             task->task_id);
-            if (n > 0 && (size_t)n < response_size - used) {
-                used += (size_t)n;
-            }
-
             break;
         }
 
-        int n = snprintf(response + used,
-                         response_size - used,
-                         "Demo %d/%d\n",
-                         task->executed_units,
-                         task->predicted_burst);
-        if (n < 0) {
-            break;
-        }
-        if ((size_t)n >= response_size - used) {
-            used = response_size - 1;
-            break;
-        }
-        used += (size_t)n;
+        char tick_payload[128];
+        snprintf(tick_payload,
+                 sizeof(tick_payload),
+                 "Demo %d/%d\n",
+                 task->executed_units,
+                 task->predicted_burst);
+        // stream one line per tick to client as required by assignment.
+        publish_task_chunk(task, tick_payload, 0);
 
         task->executed_units++;
         task->remaining_burst--;
@@ -515,24 +527,21 @@ static void run_program_slice(task_t *task, char *response, size_t response_size
     } else if (task->remaining_burst <= 0) {
         // append the final Demo N/N line exactly once when execution fully completes.
         if (!task->demo_completion_line_written) {
-            int n = snprintf(response + used,
-                             response_size - used,
-                             "Demo %d/%d\n",
-                             task->predicted_burst,
-                             task->predicted_burst);
-            if (n > 0 && (size_t)n < response_size - used) {
-                used += (size_t)n;
-            }
+            char completion_payload[128];
+            snprintf(completion_payload,
+                     sizeof(completion_payload),
+                     "Demo %d/%d\n",
+                     task->predicted_burst,
+                     task->predicted_burst);
+            publish_task_chunk(task, completion_payload, 1);
             task->demo_completion_line_written = 1;
+        } else {
+            publish_task_chunk(task, "\n", 1);
         }
         task->state = TASK_DONE;
     } else {
         task->state = TASK_WAITING;
-    }
-
-    if (used == 0 && response_size > 1) {
-        response[0] = '\n';
-        response[1] = '\0';
+        // unfinished task is requeued; do not mark command done yet.
     }
 }
 
@@ -576,12 +585,14 @@ static void *scheduler_loop(void *arg) {
 
         if (task->type == TASK_TYPE_SHELL) {
             // shell commands are executed as one-shot non-preemptive tasks.
-            memset(task->response, 0, sizeof(task->response));
-            (void)execute_and_capture(task->command, task->response, sizeof(task->response));
+            char shell_payload[TASK_RESP_MAX];
+            memset(shell_payload, 0, sizeof(shell_payload));
+            (void)execute_and_capture(task->command, shell_payload, sizeof(shell_payload));
+            publish_task_chunk(task, shell_payload, 1);
             task->state = TASK_DONE;
         } else {
             // program tasks run for one quantum and may be requeued if unfinished.
-            run_program_slice(task, task->response, sizeof(task->response));
+            run_program_slice(task, NULL, 0);
         }
 
         if (task->state == TASK_DONE) {
@@ -589,10 +600,6 @@ static void *scheduler_loop(void *arg) {
             if (task->type == TASK_TYPE_PROGRAM) {
                 append_sched_history(task);
             }
-            pthread_mutex_lock(&task->response_mutex);
-            task->response_ready = 1;
-            pthread_cond_signal(&task->done_cv);
-            pthread_mutex_unlock(&task->response_mutex);
         } else if (task->state == TASK_CANCELLED) {
             complete_task_cancelled(task, "client disconnected while running");
             if (task->type == TASK_TYPE_PROGRAM) {
@@ -878,20 +885,30 @@ static void *handle_client(void *arg) {
         // enqueue into global waiting queue; scheduler thread will execute it.
         scheduler_enqueue_task(task, 1);
 
-        // block until scheduler marks this task done and signals done_cv.
-        pthread_mutex_lock(&task->response_mutex);
-        while (!task->response_ready) {
-            pthread_cond_wait(&task->done_cv, &task->response_mutex);
-        }
-        pthread_mutex_unlock(&task->response_mutex);
+        // stream chunks until scheduler marks this task as finished.
+        int finished = 0;
+        while (!finished) {
+            char out_chunk[TASK_RESP_MAX];
+            memset(out_chunk, 0, sizeof(out_chunk));
 
-        // send the response back to the client. If sending fails, log an error and break the loop to close the connection.
-        if (send_all(client_socket, task->response, sizeof(task->response)) != 0) {
-            print_client_log("ERROR", ctx, "Socket send failed.");
-            set_client_connected(ctx->client_id, 0);
-            cancel_tasks_for_client(ctx->client_id);
-            task_destroy(task);
-            break;
+            pthread_mutex_lock(&task->response_mutex);
+            while (!task->response_ready) {
+                pthread_cond_wait(&task->done_cv, &task->response_mutex);
+            }
+            memcpy(out_chunk, task->response, sizeof(out_chunk));
+            finished = task->task_finished;
+            task->response_ready = 0;
+            pthread_cond_signal(&task->chunk_consumed_cv);
+            pthread_mutex_unlock(&task->response_mutex);
+
+            // send each streamed frame back to the client.
+            if (send_all(client_socket, out_chunk, sizeof(out_chunk)) != 0) {
+                print_client_log("ERROR", ctx, "Socket send failed.");
+                set_client_connected(ctx->client_id, 0);
+                cancel_tasks_for_client(ctx->client_id);
+                finished = 1;
+                break;
+            }
         }
 
         // print concise delivery line and final state after sending response.
